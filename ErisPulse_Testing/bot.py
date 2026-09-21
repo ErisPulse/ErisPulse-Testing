@@ -29,6 +29,7 @@ from .events import (
 )
 from .mock_adapter import MockAdapter
 from .replies import SentMessage
+from .trace import DispatchTrace
 
 # TestBot 启动时采集的生命周期事件（断言命令执行 / 中间件否决等）
 _OBSERVED_LIFECYCLE_EVENTS = (
@@ -72,6 +73,7 @@ class TestBot:
         self._dedupe_prev: bool | None = None
         self._lifecycle_hooks: list[tuple[str, Any]] = []
         self._observed: dict[str, list[dict[str, Any]]] = {name: [] for name in _OBSERVED_LIFECYCLE_EVENTS}
+        self._traces: list[DispatchTrace] = []
         self._started = False
 
     # ==================== 生命周期 ====================
@@ -190,23 +192,32 @@ class TestBot:
 
     # ==================== 事件分发 ====================
 
-    async def dispatch(self, event: dict[str, Any], *, drain: bool = True) -> None:
+    async def dispatch(self, event: dict[str, Any], *, drain: bool = True) -> DispatchTrace:
         """
-        分发一条事件，默认等待全部处理器落地
+        分发一条事件，默认等待全部处理器落地，并返回分发决策链
 
         框架的处理器是 fire-and-forget Task；本方法 emit 后 gather 在途
-        Task，调用返回即处理完成——断言无需 sleep。
+        Task，调用返回即处理完成——断言无需 sleep。决策链记录本次分发
+        经过的每个判定点（命令命中 / 作用域 / 权限 / 冷却 / 执行结果 /
+        中间件否决），直接回答"命令为什么没触发"。
 
         :param event: 事件 dict（由 create_*_event 工厂构造）
         :param drain: 是否等待处理器落地（默认 True）。``wait_reply`` 等
             交互式处理器会长驻挂起，触发交互的首次消息应传 ``drain=False``；
             后续 ``reply_as`` 会统一等待全部任务（含被唤醒的处理器）收口
+        :return: DispatchTrace——``trace.verdict`` / ``trace.explain()`` /
+            ``trace.assert_executed()`` 等
         """
         from ErisPulse import adapter
+        from ErisPulse.Core.Event.trace import start_dispatch_trace
 
-        await adapter.emit(event)
-        if drain:
-            await self._drain_handlers()
+        with start_dispatch_trace() as records:
+            await adapter.emit(event)
+            if drain:
+                await self._drain_handlers()
+        trace = DispatchTrace(records)
+        self._traces.append(trace)
+        return trace
 
     async def send_message(self, text: str, **event_kwargs: Any) -> None:
         """
@@ -356,6 +367,18 @@ class TestBot:
                 return self.replies[-1]
             await asyncio.sleep(0.05)
         raise TimeoutError(f"no outbound message within {timeout}s")
+
+    # ==================== 决策链 ====================
+
+    @property
+    def traces(self) -> list[DispatchTrace]:
+        """本 TestBot 的全部分发决策链（按分发顺序）"""
+        return list(self._traces)
+
+    @property
+    def last_trace(self) -> DispatchTrace | None:
+        """最近一次分发的决策链（未分发过时为 None）"""
+        return self._traces[-1] if self._traces else None
 
     # ==================== 生命周期断言 ====================
 

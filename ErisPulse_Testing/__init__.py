@@ -19,8 +19,10 @@ from .events import (
 )
 from .mock_adapter import MockAdapter
 from .replies import SentMessage
+from .trace import DispatchTrace
 
 __all__ = [
+    "DispatchTrace",
     "MockAdapter",
     "SentMessage",
     "TestBot",

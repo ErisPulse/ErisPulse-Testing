@@ -262,3 +262,58 @@ class TestPluginFixtures:
 
             await bot.dispatch(cce("fx", prefix="//"))
             assert bot.last_reply.text == "ok"
+
+
+# ==================== 分发决策链（方向五）====================
+
+
+class TestDispatchTrace:
+    async def test_executed_trace(self, bot):
+        @command_registry("tr_ok")
+        async def tr_ok(event):
+            await event.reply("done")
+
+        trace = await bot.dispatch(create_command_event("tr_ok"))
+        trace.assert_executed("tr_ok")
+        assert trace.executed and trace.command == "tr_ok"
+        assert "✓" in trace.explain()
+        assert bot.last_trace is trace
+
+    async def test_no_match_trace_with_suggestion(self, bot):
+        @command_registry("tr_real")
+        async def tr_real(event):
+            await event.reply("x")
+
+        trace = await bot.dispatch(create_command_event("tr_reall"))
+        trace.assert_no_match()
+        step = trace.steps("command_match")[0]
+        assert step["params"]["suggestion"] == "tr_real"
+
+    async def test_cooldown_dropped_trace(self, bot):
+        @command_registry("tr_cd", cooldown="1h")
+        async def tr_cd(event):
+            await event.reply("ok")
+
+        await bot.dispatch(create_command_event("tr_cd"))
+        trace = await bot.dispatch(create_command_event("tr_cd"))
+        trace.assert_dropped()
+        assert "cooldown" in trace.explain()
+
+    async def test_passed_through_trace(self, bot):
+        trace = await bot.dispatch(create_message_event("普通聊天"))
+        assert trace.verdict == "passed"
+        assert trace.steps("dispatch")
+
+    async def test_middleware_veto_trace(self, bot):
+        from ErisPulse.Core import adapter as adapter_mgr
+
+        @adapter_mgr.middleware
+        async def veto_all(data):
+            return False
+
+        try:
+            trace = await bot.dispatch(create_message_event("/whatever"))
+            assert trace.verdict == "dropped"
+            assert trace.steps("middleware")
+        finally:
+            adapter_mgr._onebot_middlewares.clear()
