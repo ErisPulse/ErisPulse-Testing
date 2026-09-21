@@ -1,0 +1,80 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ErisPulse-Testing"
+version = "0.1.0"
+description = "Official testing toolkit for ErisPulse modules & adapters — TestBot, event factories, reply recording and assertions | ErisPulse 官方测试工具包：TestBot、事件工厂、回复记录与断言"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+
+authors = [
+    { name = "ErisDev" }
+]
+
+keywords = [
+    "erispulse",
+    "testing",
+    "testbot",
+    "pytest",
+    "bot",
+    "chatbot",
+    "framework",
+]
+
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3 :: Only",
+    "Framework :: Pytest",
+    "Topic :: Software Development :: Testing",
+]
+
+dependencies = [
+    "ErisPulse>=2.8.5",
+    "pytest>=7.0.0",
+    "pytest-asyncio>=0.21.0",
+]
+
+[project.entry-points.pytest11]
+erispulse_testing = "ErisPulse_Testing.pytest_plugin"
+
+[tool.setuptools.packages.find]
+include = ["ErisPulse_Testing*"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[tool.ruff]
+target-version = "py310"
+line-length = 120
+include = ["ErisPulse_Testing/**/*.py", "tests/**/*.py"]
+
+[tool.ruff.lint]
+select = ["E", "W", "F", "I", "B", "C4", "UP", "SIM", "RET", "PIE", "RUF", "PTH", "PERF", "N"]
+ignore = [
+    # 中文项目不适用：全角标点误报（与 SDK 主库一致）
+    "RUF001", "RUF002", "RUF003",
+    "B008",    # Depends(...) 参数默认值是 DI 框架惯用法（与 SDK 主库一致）
+    "N999",    # ErisPulse_Testing 模块名遵循生态包命名规范
+    "BLE001",  # 清理路径兜底吞异常（与框架卸载流程风格一致）
+    "S110",    # 同上：卸载失败仅记日志不中断
+    "PLW0603", # TestBot 需要复位框架全局单例状态
+    "SIM105",  # contextlib.suppress 不见得更易读（与 SDK 一致）
+    "PERF203", # 清理循环内 try/except 属必要兜底（与 SDK 一致）
+    "N802",    # Raw_ob12 是框架适配器契约方法名（必须一字不差）
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S101"]
+"tests/conftest.py" = ["E402"]  # sys.path 兜底须先于 ErisPulse 导入
+
