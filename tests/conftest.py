@@ -18,10 +18,11 @@ except ImportError:
 
 import pytest
 
-# 显式挂载插件 fixtures（pip 安装后经 pytest11 entry point 自动注册，按模块名去重）
-pytest_plugins = ["ErisPulse_Testing.pytest_plugin"]
-
 from ErisPulse_Testing import TestBot
+
+# 显式导入插件 fixture 函数（未安装包的开发场景兜底；已安装时 entry point
+# 也会注册同名 fixture，conftest 内定义优先级更高，两者不冲突）
+from ErisPulse_Testing.pytest_plugin import make_testbot, testbot  # noqa: F401
 
 
 @pytest.fixture(autouse=True)

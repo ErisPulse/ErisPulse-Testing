@@ -74,6 +74,11 @@ class TestBot:
         self._lifecycle_hooks: list[tuple[str, Any]] = []
         self._observed: dict[str, list[dict[str, Any]]] = {name: [] for name in _OBSERVED_LIFECYCLE_EVENTS}
         self._traces: list[DispatchTrace] = []
+        # 被测适配器（DUT）状态：load_adapter / start_adapter / feed_raw 使用
+        self._dut: Any = None
+        self._dut_platform: str | None = None
+        self._dut_start_task: asyncio.Task | None = None
+        self.dut_api_calls: list[dict[str, Any]] = []
         self._started = False
 
     # ==================== 生命周期 ====================
@@ -136,6 +141,9 @@ class TestBot:
         from ErisPulse.Core.Event.interaction import interaction
         from ErisPulse.Core.Event.message import message as _message_handler
 
+        # 被测适配器先正常停止（shutdown + 取消未完成的 start 任务）
+        await self.stop_adapter()
+
         _clear_all_handlers()
         _command_handler.commands.clear()
         _command_handler.aliases.clear()
@@ -151,6 +159,13 @@ class TestBot:
         _adapter_mgr._bots.clear()
         _adapter_mgr._adapters.pop(self.platform, None)
         _adapter_mgr._adapter_info.pop(self.platform, None)
+        if self._dut_platform and self._dut_platform != self.platform:
+            _adapter_mgr._adapters.pop(self._dut_platform, None)
+            _adapter_mgr._adapter_info.pop(self._dut_platform, None)
+        self._dut = None
+        self._dut_platform = None
+        self._dut_start_task = None
+        self.dut_api_calls.clear()
 
         interaction.clear()
 
@@ -288,6 +303,158 @@ class TestBot:
         await module.unload(name)
         if name in self._loaded_modules:
             self._loaded_modules.remove(name)
+
+    # ==================== 被测适配器（DUT） ====================
+
+    def _resolve_adapter_class(self, target: Any) -> type:
+        """
+        解析适配器类：类对象直接返回；``"pkg.mod:Attr"`` 导入路径动态导入
+
+        :param target: 适配器类或导入路径字符串
+        :return: 适配器类
+        :raises ValueError: 路径格式非法时
+        """
+        if isinstance(target, str):
+            import importlib
+
+            module_path, _, attr = target.partition(":")
+            mod = importlib.import_module(module_path)
+            return getattr(mod, attr) if attr else mod
+        return target
+
+    @property
+    def dut(self) -> Any:
+        """被测适配器实例；未加载时为 None"""
+        return self._dut
+
+    @property
+    def dut_platform(self) -> str | None:
+        """被测适配器注册的平台名；未加载时为 None"""
+        return self._dut_platform
+
+    def load_adapter(
+        self,
+        target: Any,
+        *,
+        platform: str | None = None,
+        config: dict[str, Any] | None = None,
+        mock_api: bool = True,
+    ) -> str:
+        """
+        注册被测适配器（Device Under Test）
+
+        :param target: 适配器类或导入路径字符串（``"pkg.mod:AdapterClass"``）
+        :param platform: 平台名；缺省复用 TestBot 平台名（会**替换**记录型适配器，
+            此后 ``bot.sent`` 不再有新记录——被测适配器的出站断言改用
+            ``bot.dut_api_calls`` 或其 Send DSL 间谍）
+        :param config: 注入适配器配置值（写入适配器 ``_get_config_key()`` 对应的配置键，
+            ``self.cfg`` 即可读到）
+        :param mock_api: True（默认）时用记录型间谍替换适配器的 ``call_api``：
+            出站 API 调用被记录到 ``bot.dut_api_calls`` 并返回标准成功响应，不触网
+        :return: 实际注册的平台名
+        """
+        from ErisPulse import adapter as adapter_mgr
+        from ErisPulse import config as global_config
+
+        if not self._started:
+            raise RuntimeError("TestBot 未启动：请使用 'async with bot:' 或 await bot.startup()")
+        cls = self._resolve_adapter_class(target)
+        plat = platform or self.platform
+        adapter_mgr.register(plat, cls)
+        instance = adapter_mgr.get(plat)
+        if config:
+            try:
+                config_key = instance._get_config_key()
+            except Exception:
+                config_key = cls.__name__
+            global_config.setConfig(config_key, config)
+        if mock_api:
+            self._install_api_spy(instance)
+        # 覆盖 TestBot 自身平台时同步内部引用，保证 dut 路径的一致语义
+        if plat == self.platform:
+            self._adapter = None
+        self._dut = instance
+        self._dut_platform = plat
+        return plat
+
+    def _install_api_spy(self, instance: Any) -> None:
+        """
+        替换适配器的 ``call_api`` 为记录型间谍（不触网，返回标准成功响应）
+
+        :param instance: 被测适配器实例
+        """
+
+        async def _spy(endpoint: str, **params: Any) -> dict[str, Any]:
+            record = {"endpoint": endpoint, **params}
+            self.dut_api_calls.append(record)
+            return {
+                "status": "ok",
+                "retcode": 0,
+                "data": record,
+                "message_id": f"dut_{len(self.dut_api_calls)}",
+                "message": "ok",
+                "echo": None,
+            }
+
+        instance.call_api = _spy
+
+    async def start_adapter(self, timeout: float = 5.0) -> None:
+        """
+        启动被测适配器（调用其 ``start()``）
+
+        ``start()`` 在 timeout 内正常返回即视为已启动；若超时（如 start 内
+        常驻自建连接循环）同样视为已启动，任务保留、close 时统一取消。
+
+        :param timeout: 等待 start() 完成的秒数
+        """
+        if self._dut is None:
+            raise RuntimeError("请先调用 load_adapter(...)")
+        self._dut_start_task = asyncio.create_task(self._dut.start())
+        try:
+            await asyncio.wait_for(asyncio.shield(self._dut_start_task), timeout)
+            self._dut_start_task = None  # 已正常完成
+        except asyncio.TimeoutError:
+            pass  # 长驻 start：视为已启动
+
+    async def stop_adapter(self, timeout: float = 5.0) -> None:
+        """
+        停止被测适配器（调用其 ``shutdown()`` 并取消未完成的 start 任务）
+
+        :param timeout: 等待 shutdown() 完成的秒数
+        """
+        if self._dut is None:
+            return
+        try:
+            await asyncio.wait_for(self._dut.shutdown(), timeout)
+        except Exception:
+            pass
+        if self._dut_start_task is not None and not self._dut_start_task.done():
+            self._dut_start_task.cancel()
+            try:
+                await self._dut_start_task
+            except (asyncio.CancelledError, Exception):
+                pass
+        self._dut_start_task = None
+
+    async def feed_raw(self, raw: Any, *, drain: bool = True) -> None:
+        """
+        向被测适配器投递平台原始数据（走其 ``convert(raw)`` 转换入口）
+
+        转换出的标准事件会经事件总线分发（可被 ``bot.replies`` 与各事件
+        处理器观察到）。适配器未暴露 ``convert`` 入口时抛 ``AttributeError``，
+        此时请直接构造标准事件后 ``dispatch``。
+
+        :param raw: 平台原始数据
+        :param drain: 是否等待分发任务落地（透传 :meth:`dispatch`）
+        """
+        if self._dut is None:
+            raise RuntimeError("请先调用 load_adapter(...)")
+        converter = getattr(self._dut, "convert", None)
+        if converter is None:
+            raise AttributeError("适配器未暴露 convert(raw) 转换入口")
+        event = converter(raw)
+        if event:
+            await self.dispatch(event, drain=drain)
 
     # ==================== 出站断言 ====================
 

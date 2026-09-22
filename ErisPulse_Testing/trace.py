@@ -62,7 +62,7 @@ class DispatchTrace:
                 return (r.get("params") or {}).get("command")
         return None
 
-    def assert_executed(self, command: str | None = None) -> "DispatchTrace":
+    def assert_executed(self, command: str | None = None) -> DispatchTrace:
         """
         断言命令已成功执行
 
@@ -78,7 +78,7 @@ class DispatchTrace:
             )
         return self
 
-    def assert_rejected(self) -> "DispatchTrace":
+    def assert_rejected(self) -> DispatchTrace:
         """
         断言命令被权限类判定拒绝（作用域 / ACL / 主人 / 权限）
 
@@ -89,7 +89,7 @@ class DispatchTrace:
             raise AssertionError(f"expected rejected, got {self.verdict!r}:\n{self.explain()}")
         return self
 
-    def assert_dropped(self) -> "DispatchTrace":
+    def assert_dropped(self) -> DispatchTrace:
         """
         断言命令被静默丢弃（如冷却命中）
 
@@ -100,7 +100,7 @@ class DispatchTrace:
             raise AssertionError(f"expected dropped, got {self.verdict!r}:\n{self.explain()}")
         return self
 
-    def assert_no_match(self) -> "DispatchTrace":
+    def assert_no_match(self) -> DispatchTrace:
         """
         断言未命中任何注册命令
 

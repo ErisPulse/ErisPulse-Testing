@@ -3,10 +3,10 @@ ErisPulse-Testing 自测
 
 覆盖 RFC 承诺 API 与断言面：命令分发与注入、回复记录断言、
 模块加载/卸载、wait_reply 模拟、依赖替换、生命周期采集、
-事件工厂、自定义前缀配置。
+事件工厂、自定义前缀配置、分发决策链、被测适配器（DUT）。
 """
 
-
+import pytest
 from ErisPulse.Core.Event.command import command as command_registry
 
 from ErisPulse_Testing import (
@@ -317,3 +317,124 @@ class TestDispatchTrace:
             assert trace.steps("middleware")
         finally:
             adapter_mgr._onebot_middlewares.clear()
+
+
+# ==================== 被测适配器（DUT）====================
+
+
+class TestAdapterUnderTest:
+    """适配器测试支持：load_adapter / start_adapter / feed_raw / call_api 间谍"""
+
+    def _make_adapter_class(self):
+        from ErisPulse import BaseAdapter
+
+        class MiniAdapter(BaseAdapter):
+            class Send(BaseAdapter.Send):
+                def Raw_ob12(self, message, **kwargs):
+                    """出站消息段 → call_api（经 TestBot 的间谍记录）"""
+                    import asyncio
+
+                    adapter_instance = self._adapter
+
+                    async def _send():
+                        segments = self._apply_modifiers(message)
+                        return await adapter_instance.call_api(
+                            "send_message", message=segments, **self.send_context
+                        )
+
+                    return asyncio.create_task(_send())
+
+            async def start(self):
+                pass
+
+            async def shutdown(self):
+                pass
+
+            async def call_api(self, endpoint, **params):
+                raise RuntimeError("real network call should be spied")
+
+            def convert(self, raw):
+                from ErisPulse_Testing import create_message_event
+
+                return create_message_event(
+                    raw.get("text", ""),
+                    platform=self._platform,
+                    bot_id="bot_x",
+                )
+
+        return MiniAdapter
+
+    async def test_load_adapter_registers_and_spies_call_api(self, bot):
+        Mini = self._make_adapter_class()
+        plat = bot.load_adapter(Mini, platform="dut", config={"token": "t"})
+        assert plat == "dut"
+        assert bot.dut is not None
+
+        # call_api 被间谍替换：不触网、记录调用、返回标准响应
+        resp = await bot.dut.call_api("get_login_info", user_id="u1")
+        assert resp["status"] == "ok"
+        assert bot.dut_api_calls == [{"endpoint": "get_login_info", "user_id": "u1"}]
+
+    async def test_dut_replaces_mock_on_same_platform(self, bot):
+        """平台名与 TestBot 相同时替换记录型适配器——出站断言改走 dut_api_calls"""
+        Mini = self._make_adapter_class()
+        bot.load_adapter(Mini)  # 平台 = test（与 TestBot 相同）
+
+        @command_registry("hello")
+        async def hello(event):
+            await event.reply("hi")
+
+        await bot.dispatch(
+            __import__("ErisPulse_Testing", fromlist=["create_message_event"])
+            .create_message_event("/hello")
+        )
+        assert bot.dut_api_calls  # 出站经被测适配器产生 API 调用记录
+
+    async def test_start_stop_adapter(self, bot):
+        Mini = self._make_adapter_class()
+        started, stopped = [], []
+
+        class StartyMini(Mini):
+            async def start(self):
+                started.append(1)
+
+            async def shutdown(self):
+                stopped.append(1)
+
+        bot.load_adapter(StartyMini, platform="dut2")
+        await bot.start_adapter()
+        assert started == [1]
+        await bot.stop_adapter()
+        assert stopped == [1]
+
+    async def test_feed_raw_via_convert(self, bot):
+        """feed_raw → convert → 命令分发 → 回复经 DUT 的 Send DSL 发出并被间谍记录"""
+        import json
+
+        Mini = self._make_adapter_class()
+        bot.load_adapter(Mini, platform="dut3")
+
+        @command_registry("dutping")
+        async def dutping(event):
+            await event.reply("pong")
+
+        await bot.feed_raw({"text": "/dutping"})
+        blob = json.dumps(bot.dut_api_calls, ensure_ascii=False)
+        assert "pong" in blob
+
+    async def test_feed_raw_without_convert_raises(self, bot):
+        from ErisPulse import BaseAdapter
+
+        class NoConvert(BaseAdapter):
+            async def start(self):
+                pass
+
+            async def shutdown(self):
+                pass
+
+            async def call_api(self, endpoint, **params):
+                return {}
+
+        bot.load_adapter(NoConvert, platform="dut4")
+        with pytest.raises(AttributeError):
+            await bot.feed_raw({"text": "x"})

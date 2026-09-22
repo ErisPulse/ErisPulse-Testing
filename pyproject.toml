@@ -75,6 +75,6 @@ ignore = [
 ]
 
 [tool.ruff.lint.per-file-ignores]
-"tests/**" = ["S101"]
+"tests/**" = ["S101", "N806"]  # S101 断言；N806 测试内适配器类别名允许大写
 "tests/conftest.py" = ["E402"]  # sys.path 兜底须先于 ErisPulse 导入
 
