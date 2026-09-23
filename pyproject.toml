@@ -44,6 +44,11 @@ dependencies = [
     "pytest-asyncio>=0.21.0",
 ]
 
+# 开发环境：SDK 一律取同级 Develop/v2 工作树（editable），
+# 避免被 uv 从 PyPI 解析的旧稳定版遮蔽（本包 TestBot 依赖 2.9 的命令治理 API）
+[tool.uv.sources]
+ErisPulse = { path = "../ErisPulse", editable = true }
+
 [project.entry-points.pytest11]
 erispulse_testing = "ErisPulse_Testing.pytest_plugin"
 
