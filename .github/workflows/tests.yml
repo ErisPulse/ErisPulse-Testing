@@ -1,0 +1,45 @@
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    name: ${{ matrix.name }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # 两条版本腿持续验证兼容承诺：核心功能跑 PyPI 稳定版，
+          # 高级功能（决策链 / 依赖替换 / 否决观测）跑 2.9-dev 源码
+          - name: "EP 2.8.6 (PyPI stable)"
+            ep: "pypi"
+          - name: "EP 2.9.0-dev (source, Develop/v2)"
+            ep: "source"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install (ErisPulse from PyPI)
+        if: matrix.ep == 'pypi'
+        run: |
+          python -m pip install --upgrade pip
+          pip install "ErisPulse==2.8.6"
+          pip install -e .
+
+      - name: Install (ErisPulse from source)
+        if: matrix.ep == 'source'
+        run: |
+          python -m pip install --upgrade pip
+          git clone --depth 1 --branch Develop/v2 https://github.com/ErisPulse/ErisPulse.git "$RUNNER_TEMP/ErisPulse"
+          pip install -e "$RUNNER_TEMP/ErisPulse"
+          pip install -e .
+
+      - name: Run tests
+        run: python -m pytest -q
