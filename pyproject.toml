@@ -44,8 +44,12 @@ dependencies = [
     "pytest-asyncio>=0.21.0",
 ]
 
+# 版本策略：核心功能兼容 ErisPulse>=2.8.5（PyPI 稳定版可直接用于 CI/CD）；
+# 分发决策链 / patch_dependency / 中间件否决观测等高级功能需 2.9.0-dev+，
+# 运行时经 ErisPulse_Testing/_compat.py 特性探测自动降级（CI 双版本腿持续验证）。
+# 本包暂不发布，将随 ErisPulse 2.9 正式发包。
 # 开发环境：SDK 一律取同级 Develop/v2 工作树（editable），
-# 避免被 uv 从 PyPI 解析的旧稳定版遮蔽（本包 TestBot 依赖 2.9 的命令治理 API）
+# 避免被 uv 从 PyPI 解析的旧稳定版遮蔽。
 [tool.uv.sources]
 ErisPulse = { path = "../ErisPulse", editable = true }
 

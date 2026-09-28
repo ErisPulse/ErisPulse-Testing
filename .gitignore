@@ -9,3 +9,5 @@ config/
 *.db-wal
 .coverage
 htmlcov/
+.zcode/
+.zcodeignore

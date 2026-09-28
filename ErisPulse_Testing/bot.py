@@ -16,11 +16,12 @@ module.load / lifecycle），不改动框架核心。
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Iterable
+from collections.abc import Iterable, Iterator
 from contextlib import contextmanager
 from typing import Any
 from unittest.mock import AsyncMock, Mock
 
+from ._compat import HAS_DI, HAS_DISPATCH_TRACE, require_ep29
 from .events import (
     DEFAULT_BOT_ID,
     DEFAULT_PLATFORM,
@@ -41,6 +42,12 @@ _OBSERVED_LIFECYCLE_EVENTS = (
 )
 
 
+@contextmanager
+def _no_dispatch_trace() -> Iterator[list[dict[str, Any]]]:
+    """ErisPulse<2.9.0-dev 无决策链数据源时的垫片：保持流程与返回形状不变（records 恒空）"""
+    yield []
+
+
 class TestBot:
     """
     ErisPulse 测试机器人
@@ -51,7 +58,8 @@ class TestBot:
     :param platform: MockAdapter 平台名（事件工厂缺省使用同名平台）
     :param bot_id: Bot 账号 ID
     :param prefix: 命令前缀（经配置内存层注入，命令热更新自动生效）
-    :param config: 附加配置覆写（点分键 → 值，setConfig 内存层不落盘）
+    :param config: 附加配置覆写（点分键 → 值，经配置内存层注入，随框架
+        延迟写盘策略约 5 秒后可能落盘，详见 README"配置覆写"一节）
     """
 
     def __init__(
@@ -94,15 +102,18 @@ class TestBot:
         if self._started:
             return self
 
-        # 配置覆写走内存层（immediate=False 不落盘），命令前缀等经热更新生效
+        # 配置覆写走内存层（immediate=False 延迟落盘，默认约 5 秒），前缀等经热更新立即生效
         merged = {"ErisPulse.event.command.prefix": self.prefix, **self._config}
         for key, value in merged.items():
             config.setConfig(key, value)
 
         # 关闭事件去重：合成事件的 id 若重复会被框架静默吞掉
+        # （去重开关 2.8.0 起才有；无该属性的老版本跳过即可）
         self._dedupe_prev = getattr(adapter, "_event_dedupe_enabled", None)
         adapter._event_dedupe_enabled = False
-        adapter._seen_event_ids.clear()
+        _seen_ids = getattr(adapter, "_seen_event_ids", None)
+        if _seen_ids is not None:
+            _seen_ids.clear()
 
         # 每个 TestBot 动态生成 MockAdapter 子类再注册：框架对"同类实例"会
         # 复用绑定，动态子类保证多个 TestBot（同一进程多用例）各自持有独立的
@@ -149,8 +160,12 @@ class TestBot:
         _command_handler.aliases.clear()
         _command_handler.groups.clear()
         _command_handler.permissions.clear()
-        _command_handler._cooldowns.clear()
-        _command_handler._max_name_tokens = 1
+        # 命令治理面（冷却表 / 名称分词上限）为 2.9.0-dev 起；更早版本无冷却治理，无需清理
+        _cooldowns = getattr(_command_handler, "_cooldowns", None)
+        if _cooldowns is not None:
+            _cooldowns.clear()
+        if hasattr(_command_handler, "_max_name_tokens"):
+            _command_handler._max_name_tokens = 1
         _message_handler.handler.handlers.clear()
         _message_handler.handler._handler_map.clear()
         _adapter_mgr._onebot_handlers.clear()
@@ -224,9 +239,15 @@ class TestBot:
             ``trace.assert_executed()`` 等
         """
         from ErisPulse import adapter
-        from ErisPulse.Core.Event.trace import start_dispatch_trace
 
-        with start_dispatch_trace() as records:
+        if HAS_DISPATCH_TRACE:
+            from ErisPulse.Core.Event.trace import start_dispatch_trace
+
+            trace_ctx = start_dispatch_trace()
+        else:
+            # 2.8.x 无决策链数据源：垫片保持 emit + drain 照常、返回形状不变
+            trace_ctx = _no_dispatch_trace()
+        with trace_ctx as records:
             await adapter.emit(event)
             if drain:
                 await self._drain_handlers()
@@ -583,7 +604,12 @@ class TestBot:
 
     @property
     def blocked_events(self) -> list[dict[str, Any]]:
-        """被中间件否决的事件（adapter.event.blocked 审计数据）"""
+        """
+        被中间件否决的事件（adapter.event.blocked 审计数据）
+
+        需 ErisPulse>=2.9.0-dev（中间件返回 False 的否决契约）；更早版本
+        中间件返回 False 不构成否决，本列表恒为空。
+        """
         return self.events("adapter.event.blocked")
 
     # ==================== 依赖替换与交互 ====================
@@ -600,10 +626,14 @@ class TestBot:
         :param dependency: 被 Depends(...) 引用的依赖函数
         :param value: 替换后依赖的返回值
         :yields: Mock 对象（可断言 call_args 等）
+        :raises RuntimeError: 当前 ErisPulse 无 Depends 体系（需 >=2.9.0-dev）
         """
         import inspect
 
         from ErisPulse.Core.Event.command import command as _cmd
+
+        if not HAS_DI:
+            require_ep29("patch_dependency（依赖替换）")
 
         is_async = inspect.iscoroutinefunction(dependency)
         mock: Any = AsyncMock(return_value=value) if is_async else Mock(return_value=value)

@@ -4,6 +4,10 @@ ErisPulse-Testing 自测
 覆盖 RFC 承诺 API 与断言面：命令分发与注入、回复记录断言、
 模块加载/卸载、wait_reply 模拟、依赖替换、生命周期采集、
 事件工厂、自定义前缀配置、分发决策链、被测适配器（DUT）。
+
+核心用例兼容 ErisPulse 2.8.5+；高级功能用例（决策链 / 依赖替换 /
+否决观测 / 治理参数）经 _compat 特性探测做 skipif 门禁，
+在两条版本腿（PyPI 稳定版 / 2.9-dev 源码）上都可运行。
 """
 
 import pytest
@@ -16,6 +20,27 @@ from ErisPulse_Testing import (
     create_meta_event,
     create_notice_event,
     create_request_event,
+)
+from ErisPulse_Testing._compat import (
+    HAS_DI,
+    HAS_DISPATCH_TRACE,
+    has_command_decorator_kwarg,
+    has_event_veto,
+)
+
+# ==================== 版本门控（高级功能需 ErisPulse>=2.9.0-dev）====================
+
+requires_trace = pytest.mark.skipif(
+    not HAS_DISPATCH_TRACE, reason="DispatchTrace 决策链需要 ErisPulse>=2.9.0-dev"
+)
+requires_di = pytest.mark.skipif(
+    not HAS_DI, reason="Depends / patch_dependency 需要 ErisPulse>=2.9.0-dev"
+)
+requires_veto = pytest.mark.skipif(
+    not has_event_veto(), reason="中间件否决契约需要 ErisPulse>=2.9.0-dev"
+)
+requires_args_kwarg = pytest.mark.skipif(
+    not has_command_decorator_kwarg("args"), reason="args= 参数解析需要 ErisPulse>=2.9.0-dev"
 )
 
 # ==================== 事件工厂 ====================
@@ -64,6 +89,7 @@ class TestCommandDispatch:
         bot.assert_command_executed("hello")
         assert bot.last_command["command"] == "hello"
 
+    @requires_args_kwarg
     async def test_args_injection(self, bot: TestBot):
         @command_registry("roll", args="<count:int> [sides:int=6]")
         async def roll(event, count: int, sides: int = 6):
@@ -171,6 +197,7 @@ class TestInteraction:
 # ==================== 依赖替换 ====================
 
 
+@requires_di
 class TestDependencyOverride:
     async def test_patch_dependency(self, bot: TestBot):
         from ErisPulse.Core.di import Depends
@@ -220,6 +247,7 @@ class TestCustomConfig:
 # ==================== 中间件否决审计 ====================
 
 
+@requires_veto
 class TestBlockedObservation:
     async def test_middleware_veto_blocked_event(self, bot: TestBot):
         from ErisPulse.Core import adapter as adapter_mgr
@@ -267,6 +295,7 @@ class TestPluginFixtures:
 # ==================== 分发决策链（方向五）====================
 
 
+@requires_trace
 class TestDispatchTrace:
     async def test_executed_trace(self, bot):
         @command_registry("tr_ok")
@@ -276,6 +305,7 @@ class TestDispatchTrace:
         trace = await bot.dispatch(create_command_event("tr_ok"))
         trace.assert_executed("tr_ok")
         assert trace.executed and trace.command == "tr_ok"
+        assert trace.available
         assert "✓" in trace.explain()
         assert bot.last_trace is trace
 
